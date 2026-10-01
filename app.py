@@ -6,6 +6,7 @@ IDX News AI — berita multi-sumber (Yahoo Finance + Google News + feed Indonesi
 import os
 import html
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from urllib.parse import urlencode
@@ -343,7 +344,7 @@ def search_other_stocks(query: str, max_results: int = 12):
 # ============================================================
 # LLM — Gemini via REST
 # ============================================================
-GEMINI_MODELS = ["gemini-3.6-flash", "gemini-flash-latest", "gemini-2.5-flash"]
+GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-flash-latest"]
 
 
 def get_secret(name: str, default: str = "") -> str:
@@ -374,14 +375,22 @@ def call_llm(contents, system: str = None, max_tokens: int = 4096):
 
     for model in models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-        try:
-            r = requests.post(
-                url,
-                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-                json=payload, timeout=90,
-            )
-        except Exception as e:
-            errors.append(f"{model}: gagal konek ({e})")
+        r = None
+        for attempt in range(3):  # retry kalau model lagi sibuk (429/500/503)
+            try:
+                r = requests.post(
+                    url,
+                    headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                    json=payload, timeout=90,
+                )
+            except Exception as e:
+                errors.append(f"{model}: gagal konek ({e})")
+                r = None
+                break
+            if r.status_code not in (429, 500, 503) or attempt == 2:
+                break
+            time.sleep(2 * (attempt + 1))  # tunggu 2 detik, lalu 4 detik
+        if r is None:
             continue
 
         if r.status_code == 200:
