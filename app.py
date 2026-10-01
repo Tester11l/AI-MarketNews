@@ -344,7 +344,7 @@ def search_other_stocks(query: str, max_results: int = 12):
 # ============================================================
 # LLM — Gemini via REST
 # ============================================================
-GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-flash-latest"]
+GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash"]
 
 
 def get_secret(name: str, default: str = "") -> str:
@@ -354,7 +354,17 @@ def get_secret(name: str, default: str = "") -> str:
         return os.environ.get(name, default).strip()
 
 
-def call_llm(contents, system: str = None, max_tokens: int = 4096):
+def normalize_model_name(model: str) -> str:
+    """Normalisasi nama model agar tidak mengirim "models/..." atau nama deprecated."""
+    if not model:
+        return ""
+    normalized = model.strip().replace("models/", "").replace("\n", "").strip()
+    if ":" in normalized:
+        normalized = normalized.split(":", 1)[0]
+    return normalized
+
+
+def call_llm(contents, system: str = None, max_tokens: int = 4096, temperature: float = 0.0):
     """contents: str atau list [{role, parts}]. Return (ok, teks_atau_error)."""
     api_key = get_secret("GEMINI_API_KEY")
     if not api_key:
@@ -364,19 +374,30 @@ def call_llm(contents, system: str = None, max_tokens: int = 4096):
 
     payload = {
         "contents": contents,
-        "generationConfig": {"temperature": 0.4, "maxOutputTokens": max_tokens},
+        "generationConfig": {
+            "temperature": min(max(float(temperature), 0.0), 1.0),
+            "maxOutputTokens": max_tokens,
+            "candidateCount": 1,
+        },
     }
     if system:
         payload["systemInstruction"] = {"parts": [{"text": system}]}
 
-    custom_model = get_secret("GEMINI_MODEL")
-    models = [custom_model] if custom_model else GEMINI_MODELS
+    custom_model = normalize_model_name(get_secret("GEMINI_MODEL"))
+    models = []
+    if custom_model:
+        models.append(custom_model)
+    for model in GEMINI_MODELS:
+        if model not in models:
+            models.append(model)
     errors = []
 
     for model in models:
+        if not model:
+            continue
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         r = None
-        for attempt in range(3):  # retry kalau model lagi sibuk (429/500/503)
+        for attempt in range(3):
             try:
                 r = requests.post(
                     url,
@@ -389,13 +410,14 @@ def call_llm(contents, system: str = None, max_tokens: int = 4096):
                 break
             if r.status_code not in (429, 500, 503) or attempt == 2:
                 break
-            time.sleep(2 * (attempt + 1))  # tunggu 2 detik, lalu 4 detik
+            time.sleep(2 * (attempt + 1))
         if r is None:
             continue
 
         if r.status_code == 200:
             try:
-                parts = r.json()["candidates"][0]["content"]["parts"]
+                data = r.json()
+                parts = data["candidates"][0]["content"]["parts"]
                 text = "".join(p.get("text", "") for p in parts).strip()
                 if text:
                     return True, text
@@ -420,13 +442,15 @@ def call_llm(contents, system: str = None, max_tokens: int = 4096):
 # ============================================================
 SYSTEM_PROMPT = """Kamu analis pasar modal Indonesia (IDX). Jawab dalam bahasa yang dipakai pengguna (default Bahasa Indonesia), lugas.
 
-Aturan:
-1. Dasarkan jawaban pada DATA TERKINI yang diberikan (berita multi-sumber + indikator teknikal). Jangan mengarang angka atau berita. Kalau data kurang, sebutkan apa yang kurang.
-2. Untuk analisis/opini saham: pisahkan [Sentimen berita] dan [Teknikal], lalu beri kesimpulan bias (bullish / netral / bearish), level support-resistance penting, skenario naik vs turun, dan risiko utama.
-3. Untuk isu pasar/IHSG: jelaskan jalur dampaknya (mis. suku bunga → bank, komoditas → energi/tambang, rupiah → importir/eksportir) dan sektor/saham yang paling terpengaruh.
-4. Sebut sumber/tanggal berita seperlunya. Kalau sumber saling bertentangan, tandai.
-5. Untuk jawaban yang berisi opini saham, tutup dengan SATU baris pengingat singkat bahwa ini analisis informatif, bukan rekomendasi beli/jual.
-6. Jika ada blok [ISI ARTIKEL ...], utamakan isinya (bukan cuma judul) untuk menilai sentimen, dan kutip fakta/angka penting dengan menyebut medianya."""
+Aturan ketat anti-hallucination:
+1. Dasarkan semua jawaban hanya pada DATA TERKINI yang diberikan (berita + teknikal + angka yang sudah ada di konteks). Jangan mengarang angka, level harga, persen, atau fakta berita.
+2. Jika angka penting tidak ada di konteks, tulis: "Tidak ada data cukup" atau "Data tidak tersedia"; jangan menebak support/resistance, target price, atau perubahan persen.
+3. Untuk analisis/opini saham: pisahkan [Sentimen berita] dan [Teknikal], lalu beri kesimpulan bias (bullish / netral / bearish), level support-resistance yang benar-benar ada di data, skenario naik vs turun, dan risiko utama.
+4. Untuk isu pasar/IHSG: jelaskan jalur dampaknya (mis. suku bunga → bank, komoditas → energi/tambang, rupiah → importir/eksportir) dan sektor/saham yang paling terpengaruh.
+5. Sebut sumber/tanggal berita seperlunya. Kalau sumber saling bertentangan, tandai.
+6. Jika ada blok [ISI ARTIKEL ...], utamakan isinya (bukan cuma judul) untuk menilai sentimen, dan kutip fakta/angka penting dengan menyebut medianya.
+7. Untuk jawaban yang berisi opini saham, tutup dengan SATU baris pengingat singkat bahwa ini analisis informatif, bukan rekomendasi beli/jual.
+8. Jangan menuliskan angka yang tidak terlihat dalam konteks; angka yang disebut harus bisa ditelusuri ke data yang tersedia."""
 
 MODE_SHORT = "MODE RINGKAS: maksimal ±90 kata, 3–5 poin bullet, langsung ke inti, tanpa pembuka/penutup panjang."
 MODE_FULL = "MODE LENGKAP: jawaban terstruktur dengan sub-judul singkat, ±250–400 kata."
