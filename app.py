@@ -113,7 +113,7 @@ INDEX_TICKER = "^JKSE"  # IHSG
 # ============================================================
 # LLM — Gemini via REST (error aslinya ditampilkan)
 # ============================================================
-GEMINI_MODELS = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash"]
+GEMINI_MODELS = ["gemini-3.6-flash", "gemini-flash-latest", "gemini-2.5-flash"]   # ← baris yang berubah
 
 
 def get_secret(name: str, default: str = "") -> str:
